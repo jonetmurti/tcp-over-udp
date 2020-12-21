@@ -2,6 +2,7 @@ import socket
 import sys
 from packet import Packet, PacketType
 import threading
+import os
 
 class Sender:
 
@@ -11,9 +12,7 @@ class Sender:
 
     def __init__(self, filepath, addresses):
         self.receiver_list = self.init_receiver(addresses)
-
-        self.packet_list = self.init_packet(filepath)
-        self.num_of_packet = len(self.packet_list)
+        self.filepath = filepath
 
     def init_receiver(self, addresses):
         receiver_list = []
@@ -30,31 +29,6 @@ class Sender:
             receiver_list.append((ip, port))
 
         return receiver_list
-
-    def init_packet(self, filepath):
-        packet_dict = {}
-        sequence = 0
-
-        file = open(filepath, "r")
-        data = file.read(self.DATA_SIZE)
-
-        while data:
-            packet = Packet(
-                PacketType.DATA,
-                len(data),
-                sequence,
-                data.encode("utf-8")
-            )
-
-            packet_dict[sequence] = packet
-            sequence += 1
-            data = file.read(self.DATA_SIZE)
-
-        file.close()
-
-        packet_dict[sequence - 1].set_packet_type(PacketType.FIN)
-
-        return packet_dict
 
     def main(self):
         thread_list = []
@@ -73,33 +47,68 @@ class Sender:
             t.join()
 
     def handle_receiver(self, address, thread_id):
-        handler_sock = socket.socket(
-            socket.AF_INET,
-            socket.SOCK_DGRAM
-        )
-        handler_sock.settimeout(self.SEND_TIMEOUT)
+        succ = True
+
+        try:
+            handler_sock = socket.socket(
+                socket.AF_INET,
+                socket.SOCK_DGRAM
+            )
+            handler_sock.settimeout(self.SEND_TIMEOUT)
+        except:
+            succ = False
 
         seq_num = 0
         retry = 0
+        create_packet = True
 
-        while retry < 100:
-            ret = self.send(handler_sock, address, self.packet_list[seq_num])
+        try:
+            file = open(self.filepath, "r")
+            num_of_packet = int(os.stat(self.filepath).st_size/self.DATA_SIZE) + 1
+            data = file.read(self.DATA_SIZE)
+            next_data = file.read(self.DATA_SIZE)
+        except:
+            succ = False
+
+        while succ and retry < 100:
+            if create_packet:
+                packet_type = PacketType.DATA if next_data else PacketType.FIN
+                sent_packet = Packet(
+                    packet_type,
+                    len(data),
+                    seq_num,
+                    data.encode("utf-8")
+                )
+                data = next_data
+                next_data = file.read(self.DATA_SIZE)
+
+            ret = self.send(handler_sock, address, sent_packet)
 
             if ret == seq_num:
                 retry += 1
+                create_packet = False
             else:
                 retry = 0
                 seq_num = ret
+                create_packet = True
                 print("packet sent for receiver {rec_id} : {seq_num}/{total_packet}".format(
                         rec_id = thread_id,
                         seq_num = seq_num,
-                        total_packet = self.num_of_packet
+                        total_packet = num_of_packet
                     ))
 
-            if seq_num == self.num_of_packet:
+            if seq_num == num_of_packet:
                 break
 
-        handler_sock.close()
+        try:
+            file.close()
+        except Exception as e:
+            print("Error closing file :", e)
+    
+        try:
+            handler_sock.close()
+        except Exception as e:
+            print("Error closing socket :", e)
 
         if retry == 100:
             print("Unable to connect to receiver :", thread_id)
